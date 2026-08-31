@@ -1,0 +1,446 @@
+// sistema-obras-backend — schema Prisma (Fase 5)
+// Implementa o modelo aprovado em REVISAO_MODELO_DOMINIO.md.
+// Ver DOMAIN_MODEL.md para justificativa de cada decisão e para os pontos
+// que foram resolvidos com uma decisão explícita nesta fase (seção "Fase 5").
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ============================================================
+// ENUMS
+// ============================================================
+
+enum RoleUsuario {
+  ADMIN
+  ANALISTA
+  CONSULTA
+}
+
+enum TipoPessoa {
+  FISICA
+  JURIDICA
+}
+
+enum PapelTitularidade {
+  TITULAR
+  COTITULAR
+}
+
+// Fechado a um valor hoje de propósito — modelado como enum (não string livre)
+// para já deixar explícito no schema qual é o único papel válido de Pessoa em
+// Obra nesta fase. Adicionar um novo papel é uma migration de enum, não uma
+// mudança de regra de aplicação solta.
+enum PapelObraPessoa {
+  RESPONSAVEL_TECNICO
+}
+
+enum TipoObra {
+  CONSTRUCAO_INICIAL
+  REFORMA
+}
+
+// Ocupação do lote — deliberadamente um enum fechado de 2 valores, não uma
+// tabela de catálogo. Ver DOMAIN_MODEL.md: ao contrário do status de obra,
+// não há evidência nos dados de que este conjunto vá crescer.
+enum OcupacaoLote {
+  DISPONIVEL
+  MORADOR
+}
+
+enum TipoDocumento {
+  FOTO
+  PDF
+  OUTRO
+}
+
+enum OrigemAnotacao {
+  MANUAL
+  IMPORTACAO_LEGADO
+}
+
+enum StatusImportacao {
+  EM_ANDAMENTO
+  CONCLUIDA
+  CONCLUIDA_COM_ERROS
+  FALHOU
+}
+
+// ============================================================
+// USUÁRIOS E AUDITORIA
+// ============================================================
+
+model Usuario {
+  id           String   @id @default(uuid()) @db.Uuid
+  nome         String
+  email        String   @unique
+  senhaHash    String   @map("senha_hash")
+  // RoleUsuario cobre os 3 perfis atuais. Uma evolução para permissões mais
+  // granulares (por entidade/ação) é uma extensão aditiva — ex.: uma tabela
+  // `Permissao`/`UsuarioPermissao` ao lado deste campo — não exige remodelar
+  // Usuario nem quebrar dado existente.
+  role         RoleUsuario
+  ativo        Boolean  @default(true)
+  criadoEm     DateTime @default(now()) @map("criado_em")
+  atualizadoEm DateTime @updatedAt @map("atualizado_em")
+
+  obraStatusHistoricos   ObraStatusHistorico[]
+  loteOcupacaoHistoricos LoteOcupacaoHistorico[]
+  auditLogs              AuditLog[]
+  importacoes            ImportacaoExecucao[]
+  documentosEnviados     Documento[]
+
+  @@map("usuarios")
+}
+
+// Auditoria genérica de qualquer alteração relevante que não tenha uma tabela
+// de histórico dedicada (ex.: edição de dados cadastrais de Lote, Pessoa,
+// mudança da flag Lote.emAlerta). Não guarda dado sensível desnecessário:
+// nunca senha, nunca documento de identificação completo — só o que já é
+// público/operacional dentro do domínio.
+model AuditLog {
+  id            String   @id @default(uuid()) @db.Uuid
+  entidade      String // nome lógico da entidade afetada, ex.: "Lote", "Obra", "Pessoa"
+  entidadeId    String   @map("entidade_id") @db.Uuid
+  acao          String // "CREATE" | "UPDATE" | "DELETE"
+  campoAlterado String?  @map("campo_alterado")
+  valorAnterior String?  @map("valor_anterior") @db.Text
+  valorNovo     String?  @map("valor_novo") @db.Text
+  usuarioId     String?  @map("usuario_id") @db.Uuid
+  usuario       Usuario? @relation(fields: [usuarioId], references: [id])
+  dataHora      DateTime @default(now()) @map("data_hora")
+  observacao    String?
+
+  @@index([entidade, entidadeId])
+  @@index([usuarioId])
+  @@map("audit_logs")
+}
+
+// ============================================================
+// IMPORTAÇÃO (rastreio de cada rodada de importação da planilha de Obras)
+// ============================================================
+
+model ImportacaoExecucao {
+  id               String           @id @default(uuid()) @db.Uuid
+  origem           String // "PLANILHA_OBRAS" — única origem no escopo atual
+  status           StatusImportacao @default(EM_ANDAMENTO)
+  totalLinhas      Int?             @map("total_linhas")
+  linhasComSucesso Int?             @map("linhas_com_sucesso")
+  linhasComErro    Int?             @map("linhas_com_erro")
+  iniciadoEm       DateTime         @default(now()) @map("iniciado_em")
+  finalizadoEm     DateTime?        @map("finalizado_em")
+  usuarioId        String?          @map("usuario_id") @db.Uuid
+  usuario          Usuario?         @relation(fields: [usuarioId], references: [id])
+
+  erros ImportacaoErro[]
+
+  @@map("importacao_execucoes")
+}
+
+model ImportacaoErro {
+  id             String             @id @default(uuid()) @db.Uuid
+  importacaoId   String             @map("importacao_id") @db.Uuid
+  importacao     ImportacaoExecucao @relation(fields: [importacaoId], references: [id])
+  linha          Int?
+  mensagem       String             @db.Text
+  dadosOriginais String?            @map("dados_originais") @db.Text
+
+  @@index([importacaoId])
+  @@map("importacao_erros")
+}
+
+// ============================================================
+// CONDOMÍNIO / QUADRA / LOTE
+// ============================================================
+
+model Condominio {
+  id           String   @id @default(uuid()) @db.Uuid
+  nome         String   @unique
+  cnpj         String?
+  endereco     String?
+  criadoEm     DateTime @default(now()) @map("criado_em")
+  atualizadoEm DateTime @updatedAt @map("atualizado_em")
+
+  quadras Quadra[]
+
+  @@map("condominios")
+}
+
+model Quadra {
+  id           String     @id @default(uuid()) @db.Uuid
+  condominioId String     @map("condominio_id") @db.Uuid
+  condominio   Condominio @relation(fields: [condominioId], references: [id])
+  codigo       String
+  criadoEm     DateTime   @default(now()) @map("criado_em")
+  atualizadoEm DateTime   @updatedAt @map("atualizado_em")
+
+  lotes Lote[]
+
+  @@unique([condominioId, codigo])
+  @@index([condominioId])
+  @@map("quadras")
+}
+
+model Lote {
+  id                 String   @id @default(uuid()) @db.Uuid
+  quadraId           String   @map("quadra_id") @db.Uuid
+  quadra             Quadra   @relation(fields: [quadraId], references: [id])
+  numero             Int
+  areaM2             Decimal? @map("area_m2") @db.Decimal(10, 2)
+  enderecoLogradouro String?  @map("endereco_logradouro")
+  enderecoNumero     String?  @map("endereco_numero")
+  // Sinalizador administrativo independente do ciclo de obra e da ocupação
+  // (ver DOMAIN_MODEL.md — não é um valor de status, é um atributo que pode
+  // coexistir com qualquer status de Obra ou qualquer OcupacaoLote).
+  emAlerta           Boolean  @default(false) @map("em_alerta")
+  // Texto bruto que não pôde ser normalizado com segurança na importação
+  // (ex.: nome de proprietário composto, arquiteto não identificável, status
+  // de origem sem proprietário nem progresso registrado). Preservado para
+  // revisão humana, nunca descartado.
+  observacaoLegado   String?  @map("observacao_legado") @db.Text
+  criadoEm           DateTime @default(now()) @map("criado_em")
+  atualizadoEm       DateTime @updatedAt @map("atualizado_em")
+
+  obras             Obra[]
+  ocupacaoHistorico LoteOcupacaoHistorico[]
+  titulares         LotePessoa[]
+  anotacoes         Anotacao[]
+  documentos        Documento[]
+  apoiosPrestados   LoteApoio[] @relation("LoteEmObra")
+  apoiosRecebidos   LoteApoio[] @relation("LoteDeApoio")
+
+  @@unique([quadraId, numero])
+  @@index([quadraId])
+  @@map("lotes")
+}
+
+// ============================================================
+// OCUPAÇÃO DO LOTE (histórico — não um campo direto em Lote)
+// ============================================================
+
+// Ausência de qualquer linha para um lote = ocupação "não informada" (ver
+// DOMAIN_MODEL.md seção sobre os 109 lotes com STATUS vazio na planilha — a
+// importação NUNCA infere DISPONIVEL a partir de status ausente).
+model LoteOcupacaoHistorico {
+  id         String       @id @default(uuid()) @db.Uuid
+  loteId     String       @map("lote_id") @db.Uuid
+  lote       Lote         @relation(fields: [loteId], references: [id])
+  ocupacao   OcupacaoLote
+  dataInicio DateTime     @map("data_inicio")
+  dataFim    DateTime?    @map("data_fim") // nulo = vigente
+  observacao String?      @db.Text
+  usuarioId  String?      @map("usuario_id") @db.Uuid
+  usuario    Usuario?     @relation(fields: [usuarioId], references: [id])
+  criadoEm   DateTime     @default(now()) @map("criado_em")
+
+  @@index([loteId])
+  @@map("lote_ocupacao_historico")
+}
+
+// ============================================================
+// STATUS DA OBRA (catálogo canônico + histórico + mapeamento legado)
+// ============================================================
+
+model StatusObra {
+  id            String  @id @default(uuid()) @db.Uuid
+  codigo        String  @unique
+  descricao     String
+  ordemExibicao Int     @default(0) @map("ordem_exibicao")
+  ativo         Boolean @default(true)
+
+  historico         ObraStatusHistorico[]
+  mapeamentosLegado StatusObraLegacyMap[]
+
+  @@map("status_obra")
+}
+
+// "De-para" auditável entre o texto exatamente como aparecia na coluna
+// STATUS da planilha (ex.: "EM ANALISE", "OBRA LIBERADA " com espaço) e o
+// status canônico de Obra. A importação nunca decide o mapeamento "na hora":
+// se o texto de origem não estiver aqui, a linha vira ImportacaoErro, não uma
+// adivinhação silenciosa.
+model StatusObraLegacyMap {
+  id               String     @id @default(uuid()) @db.Uuid
+  valorOrigem      String     @unique @map("valor_origem")
+  statusCanonicoId String     @map("status_canonico_id") @db.Uuid
+  statusCanonico   StatusObra @relation(fields: [statusCanonicoId], references: [id])
+  observacao       String?
+  criadoEm         DateTime   @default(now()) @map("criado_em")
+
+  @@map("status_obra_legacy_map")
+}
+
+model ObraStatusHistorico {
+  id         String     @id @default(uuid()) @db.Uuid
+  obraId     String     @map("obra_id") @db.Uuid
+  obra       Obra       @relation(fields: [obraId], references: [id])
+  statusId   String     @map("status_id") @db.Uuid
+  status     StatusObra @relation(fields: [statusId], references: [id])
+  dataInicio DateTime   @map("data_inicio")
+  dataFim    DateTime?  @map("data_fim") // nulo = vigente
+  observacao String?    @db.Text
+  usuarioId  String?    @map("usuario_id") @db.Uuid
+  usuario    Usuario?   @relation(fields: [usuarioId], references: [id])
+  criadoEm   DateTime   @default(now()) @map("criado_em")
+
+  @@index([obraId])
+  @@index([statusId])
+  @@map("obra_status_historico")
+}
+
+// ============================================================
+// PESSOA (única entidade de pessoa física/jurídica do domínio)
+// ============================================================
+
+model Pessoa {
+  id           String     @id @default(uuid()) @db.Uuid
+  nome         String
+  tipoPessoa   TipoPessoa @map("tipo_pessoa")
+  documento    String?    @unique // CPF ou CNPJ, quando disponível
+  telefone     String?
+  email        String?
+  criadoEm     DateTime   @default(now()) @map("criado_em")
+  atualizadoEm DateTime   @updatedAt @map("atualizado_em")
+
+  lotes              LotePessoa[]
+  obras              ObraPessoa[]
+  dadosProfissionais PessoaDadosProfissionais?
+
+  @@map("pessoas")
+}
+
+// Extensão 1:1 — só existe para quem já atuou como responsável técnico.
+// Mantida separada de Pessoa para não poluir o cadastro geral (proprietários
+// nunca têm esses campos) sem duplicar a pessoa em outra tabela.
+model PessoaDadosProfissionais {
+  pessoaId             String  @id @map("pessoa_id") @db.Uuid
+  pessoa               Pessoa  @relation(fields: [pessoaId], references: [id])
+  tipo                 String? // "ARQUITETO" | "ENGENHEIRO" — string livre por ora
+  registroProfissional String? @unique @map("registro_profissional") // CAU/CREA
+
+  @@map("pessoa_dados_profissionais")
+}
+
+model LotePessoa {
+  id         String            @id @default(uuid()) @db.Uuid
+  loteId     String            @map("lote_id") @db.Uuid
+  lote       Lote              @relation(fields: [loteId], references: [id])
+  pessoaId   String            @map("pessoa_id") @db.Uuid
+  pessoa     Pessoa            @relation(fields: [pessoaId], references: [id])
+  papel      PapelTitularidade
+  dataInicio DateTime?         @map("data_inicio")
+  dataFim    DateTime?         @map("data_fim")
+
+  @@index([loteId])
+  @@index([pessoaId])
+  @@map("lote_pessoa")
+}
+
+// ============================================================
+// OBRA (1 lote pode ter N obras ao longo do tempo — ver DOMAIN_MODEL.md)
+// ============================================================
+
+model Obra {
+  id                  String    @id @default(uuid()) @db.Uuid
+  loteId              String    @map("lote_id") @db.Uuid
+  lote                Lote      @relation(fields: [loteId], references: [id])
+  tipo                TipoObra?
+  dataLiberacao       DateTime? @map("data_liberacao")
+  dataVistoriaPosObra DateTime? @map("data_vistoria_pos_obra")
+  liberadoParaMudanca Boolean   @default(false) @map("liberado_para_mudanca")
+  dataMudanca         DateTime? @map("data_mudanca")
+  criadoEm            DateTime  @default(now()) @map("criado_em")
+  atualizadoEm        DateTime  @updatedAt @map("atualizado_em")
+
+  statusHistorico ObraStatusHistorico[]
+  responsaveis    ObraPessoa[]
+  anotacoes       Anotacao[]
+  documentos      Documento[]
+
+  @@index([loteId])
+  @@map("obras")
+}
+
+model ObraPessoa {
+  obraId   String          @map("obra_id") @db.Uuid
+  obra     Obra            @relation(fields: [obraId], references: [id])
+  pessoaId String          @map("pessoa_id") @db.Uuid
+  pessoa   Pessoa          @relation(fields: [pessoaId], references: [id])
+  papel    PapelObraPessoa
+
+  @@id([obraId, pessoaId, papel])
+  @@map("obra_pessoa")
+}
+
+// ============================================================
+// LOTE DE APOIO (auto-relação N:N em Lote, com atributos)
+// ============================================================
+
+model LoteApoio {
+  id                    String    @id @default(uuid()) @db.Uuid
+  loteEmObraId          String    @map("lote_em_obra_id") @db.Uuid
+  loteEmObra            Lote      @relation("LoteEmObra", fields: [loteEmObraId], references: [id])
+  loteApoioId           String    @map("lote_apoio_id") @db.Uuid
+  loteApoio             Lote      @relation("LoteDeApoio", fields: [loteApoioId], references: [id])
+  dataAutorizacao       DateTime? @map("data_autorizacao")
+  dataDevolucaoPrevista DateTime? @map("data_devolucao_prevista")
+  dataDevolucaoEfetiva  DateTime? @map("data_devolucao_efetiva")
+  observacao            String?   @db.Text
+
+  @@index([loteEmObraId])
+  @@index([loteApoioId])
+  @@map("lote_apoio")
+}
+
+// ============================================================
+// ANOTAÇÃO / DOCUMENTO (ligados apenas a Lote ou Obra — nunca a notificação)
+// ============================================================
+
+model Anotacao {
+  id       String         @id @default(uuid()) @db.Uuid
+  loteId   String?        @map("lote_id") @db.Uuid
+  lote     Lote?          @relation(fields: [loteId], references: [id])
+  obraId   String?        @map("obra_id") @db.Uuid
+  obra     Obra?          @relation(fields: [obraId], references: [id])
+  data     DateTime
+  texto    String         @db.Text
+  autor    String?
+  origem   OrigemAnotacao @default(MANUAL)
+  criadoEm DateTime       @default(now()) @map("criado_em")
+
+  @@index([loteId])
+  @@index([obraId])
+  @@map("anotacoes")
+}
+
+// Metadados de documento — sem armazenamento físico implementado nesta fase.
+// Os campos abaixo já preparam a integração futura (upload real) sem exigir
+// migration adicional: storageProvider/storageKey ficam nulos até existir um
+// backend de arquivos (local, S3 etc.) por trás da API.
+model Documento {
+  id              String        @id @default(uuid()) @db.Uuid
+  loteId          String?       @map("lote_id") @db.Uuid
+  lote            Lote?         @relation(fields: [loteId], references: [id])
+  obraId          String?       @map("obra_id") @db.Uuid
+  obra            Obra?         @relation(fields: [obraId], references: [id])
+  tipo            TipoDocumento
+  nomeArquivo     String        @map("nome_arquivo")
+  mimeType        String?       @map("mime_type")
+  tamanhoBytes    Int?          @map("tamanho_bytes")
+  storageProvider String?       @map("storage_provider") // ex.: "LOCAL", "S3" — nulo até implementar
+  storageKey      String?       @map("storage_key") // caminho/chave no storage, quando existir
+  checksumSha256  String?       @map("checksum_sha256")
+  descricao       String?
+  usuarioUploadId String?       @map("usuario_upload_id") @db.Uuid
+  usuarioUpload   Usuario?      @relation(fields: [usuarioUploadId], references: [id])
+  dataUpload      DateTime      @default(now()) @map("data_upload")
+
+  @@index([loteId])
+  @@index([obraId])
+  @@map("documentos")
+}
