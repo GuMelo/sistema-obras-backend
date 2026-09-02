@@ -11,6 +11,7 @@ describe("Dashboard — /indicadores e /evolucao (dados isolados de teste)", () 
   let loteId: string;
   let obraId: string;
   let statusEmAnaliseId: string;
+  let statusEmAnaliseDescricao: string;
 
   beforeAll(async () => {
     token = await obterToken(app, "ADMIN");
@@ -39,8 +40,11 @@ describe("Dashboard — /indicadores e /evolucao (dados isolados de teste)", () 
     );
     obraId = obra.rows[0].id;
 
-    const status = await pool.query<{ id: string }>(`SELECT id FROM status_obra WHERE codigo = 'EM_ANALISE'`);
+    const status = await pool.query<{ id: string; descricao: string }>(
+      `SELECT id, descricao FROM status_obra WHERE codigo = 'EM_ANALISE'`
+    );
     statusEmAnaliseId = status.rows[0].id;
+    statusEmAnaliseDescricao = status.rows[0].descricao;
 
     await pool.query(
       `INSERT INTO obra_status_historico (obra_id, status_id, data_inicio)
@@ -74,7 +78,7 @@ describe("Dashboard — /indicadores e /evolucao (dados isolados de teste)", () 
     expect(res.statusCode).toBe(200);
     const body = res.json();
     expect(body.totalLotes).toBe(1);
-    expect(body.obrasPorStatus).toEqual([{ statusCodigo: "EM_ANALISE", descricao: "Projeto em análise", quantidade: 1 }]);
+    expect(body.obrasPorStatus).toEqual([{ statusCodigo: "EM_ANALISE", descricao: statusEmAnaliseDescricao, quantidade: 1 }]);
   });
 
   it("GET /dashboard/indicadores?statusObraId= filtra por status vigente", async () => {
@@ -114,7 +118,7 @@ describe("Dashboard — /indicadores e /evolucao (dados isolados de teste)", () 
     const body = res.json();
     expect(body.granularidade).toBe("mes");
     expect(body.serie).toEqual([
-      { periodo: "2026-02", statusCodigo: "EM_ANALISE", descricao: "Projeto em análise", quantidade: 1 },
+      { periodo: "2026-02", statusCodigo: "EM_ANALISE", descricao: statusEmAnaliseDescricao, quantidade: 1 },
     ]);
   });
 

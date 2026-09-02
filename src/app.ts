@@ -25,12 +25,17 @@ import historicoRoutes from "./modules/historico/routes.js";
 import importacoesRoutes from "./modules/importacoes/routes.js";
 import dashboardRoutes from "./modules/dashboard/routes.js";
 import auditoriaRoutes from "./modules/auditoria/routes.js";
+import relatoriosRoutes from "./modules/relatorios/routes.js";
 
 export function buildApp(): FastifyInstance {
   const app = Fastify({ logger: process.env.NODE_ENV !== "test" });
 
   app.register(sensible);
-  app.register(cors, { origin: true });
+  // @fastify/cors default methods é "GET,HEAD,POST" (opção `methods` da lib,
+  // não específica deste projeto) — sem sobrescrever, PATCH/PUT/DELETE nunca
+  // passavam no preflight do navegador, mesmo com o endpoint funcionando
+  // normalmente fora do navegador (sem preflight).
+  app.register(cors, { origin: true, methods: ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE"] });
   app.register(multipart);
   app.register(dbPlugin);
   app.register(authPlugin);
@@ -66,6 +71,7 @@ export function buildApp(): FastifyInstance {
         { name: "Importações" },
         { name: "Dashboard" },
         { name: "Auditoria" },
+        { name: "Relatórios" },
       ],
     },
   });
@@ -124,6 +130,7 @@ export function buildApp(): FastifyInstance {
   app.register(importacoesRoutes);
   app.register(dashboardRoutes);
   app.register(auditoriaRoutes);
+  app.register(relatoriosRoutes);
 
   return app;
 }

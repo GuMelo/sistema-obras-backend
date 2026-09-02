@@ -62,6 +62,11 @@ enum TipoDocumento {
 enum OrigemAnotacao {
   MANUAL
   IMPORTACAO_LEGADO
+  // Resumo gerado automaticamente pelo backend ao editar um Lote (PATCH
+  // /lotes/:id) — histórico funcional legível, distinto do texto que o
+  // usuário escreve (MANUAL) e do texto preservado da importação
+  // (IMPORTACAO_LEGADO). Ver AuditLog para o registro técnico por campo.
+  EDICAO_SISTEMA
 }
 
 enum StatusImportacao {

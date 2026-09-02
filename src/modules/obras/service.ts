@@ -1,5 +1,6 @@
 import type { Pool } from "pg";
 import { NotFoundError, ValidationAppError } from "../../lib/errors.js";
+import { removerPrefixoProfissional } from "../../lib/pessoa.js";
 import {
   montarResultadoPaginado,
   resolverOrdenacao,
@@ -207,18 +208,24 @@ export async function atualizarStatusObra(
 export interface ResponsavelTecnicoDaObra {
   pessoaId: string;
   nome: string;
-  papel: "RESPONSAVEL_TECNICO";
+  papel: "ARQUITETO" | "ENGENHEIRO" | null;
 }
 
+/** `papel` vem de pessoa_dados_profissionais.tipo, não de obra_pessoa.papel
+ * (sempre o literal "RESPONSAVEL_TECNICO" — único valor do enum
+ * PapelObraPessoa hoje, não diz o cargo da pessoa). `nome` vem sem o prefixo
+ * profissional cru do banco ("Arquiteto Fulano" -> "Fulano"), já que o cargo
+ * aqui é estruturado em `papel` — mesmo critério de lotes/service.ts. */
 export async function listarResponsaveisDaObra(pool: Pool, obraId: string): Promise<ResponsavelTecnicoDaObra[]> {
   await buscarObraPorId(pool, obraId);
-  const res = await pool.query(
-    `SELECT p.id AS "pessoaId", p.nome, op.papel
+  const res = await pool.query<ResponsavelTecnicoDaObra>(
+    `SELECT p.id AS "pessoaId", p.nome, pdp.tipo AS papel
      FROM obra_pessoa op JOIN pessoas p ON p.id = op.pessoa_id
+     LEFT JOIN pessoa_dados_profissionais pdp ON pdp.pessoa_id = p.id
      WHERE op.obra_id = $1 ORDER BY p.nome`,
     [obraId]
   );
-  return res.rows;
+  return res.rows.map((r) => ({ ...r, nome: removerPrefixoProfissional(r.nome) }));
 }
 
 export async function vincularResponsavelTecnico(pool: Pool, obraId: string, pessoaId: string): Promise<void> {
