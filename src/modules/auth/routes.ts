@@ -1,5 +1,5 @@
 import type { FastifyInstance } from "fastify";
-import { autenticar } from "./service.js";
+import { alterarSenhaPropria, autenticar } from "./service.js";
 import { respostasErroPadrao } from "../../lib/schemas.js";
 
 interface LoginBody {
@@ -63,6 +63,34 @@ export default async function authRoutes(fastify: FastifyInstance) {
     },
     async (request) => {
       return request.usuario;
+    }
+  );
+
+  fastify.patch<{ Body: { senhaAtual: string; novaSenha: string } }>(
+    "/auth/senha",
+    {
+      preHandler: fastify.authenticate,
+      schema: {
+        tags: ["Auth"],
+        summary: "Troca a própria senha (qualquer papel autenticado).",
+        description:
+          "Exige a senha atual para confirmar a identidade. Só altera a senha do próprio usuário do token — " +
+          "para um ADMIN redefinir a senha de outro usuário sem saber a senha atual dele, ver PATCH /users/:id.",
+        security: [{ bearerAuth: [] }],
+        body: {
+          type: "object",
+          properties: {
+            senhaAtual: { type: "string", minLength: 1 },
+            novaSenha: { type: "string", minLength: 8 },
+          },
+          required: ["senhaAtual", "novaSenha"],
+        },
+        response: { 204: { type: "null" }, ...respostasErroPadrao },
+      },
+    },
+    async (request, reply) => {
+      await alterarSenhaPropria(fastify.pg, request.usuario!.id, request.body.senhaAtual, request.body.novaSenha);
+      reply.code(204);
     }
   );
 }
